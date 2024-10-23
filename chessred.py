@@ -1,9 +1,7 @@
 import argparse
-from tkinter import ttk
+from tkinter import Tk, Label, PhotoImage, Button
 from PIL import Image, ImageTk
-from ttkthemes import ThemedTk
 from picamera2 import Picamera2
-from pathlib import Path
 
 # Window width for the Browser App
 WINDOW_WIDTH = 1280
@@ -24,10 +22,9 @@ class Browser:
         self.picam2.start()
 
         # Initialize app window
-        self.window = ThemedTk(theme="yaru")
+        self.window = Tk()
         self.window.title('Live Camera Feed and Chessboard')
-        self.window.iconbitmap("resources/pieces/icon.ico")
-        self.window_width = WINDOW_WIDTH
+        self.window.geometry(f"{WINDOW_WIDTH}x640")  # Set fixed window size
         self.window.resizable(False, False)
 
         # Build UI
@@ -66,11 +63,11 @@ class Browser:
         # Insert images to window
         if not hasattr(self, "my_label"):
             # Live feed on the left
-            self.my_label = ttk.Label(image=self.current_image)
+            self.my_label = Label(image=self.current_image)
             self.my_label.grid(row=0, column=0, columnspan=5)
 
             # 2D chessboard on the right
-            self.my_label2D = ttk.Label(image=self.current_2Dimage)
+            self.my_label2D = Label(image=self.current_2Dimage)
             self.my_label2D.grid(row=0, column=5, columnspan=5)
         else:
             self.my_label.configure(image=self.current_image)
@@ -136,4 +133,7 @@ if __name__ == "__main__":
     parser.add_argument('--browser', action="store_true",
                         help='Run live camera feed with 2D chessboard.')
 
-    args = parser.
+    args = parser.parse_args()
+
+    if args.browser:
+        Browser()
