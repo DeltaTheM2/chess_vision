@@ -1,4 +1,3 @@
-"""This module implements the Browser class."""
 import argparse
 import json
 from pathlib import Path
@@ -8,8 +7,9 @@ from typing import Union
 import pandas as pd
 from PIL import Image, ImageTk
 from ttkthemes import ThemedTk
-from picamera2 import Picamera2
+
 from utils import download_chessred, extract_zipfile
+from picamera2 import Picamera2  # Import Picamera2
 
 # Window width for the Browser App
 WINDOW_WIDTH = 1280
@@ -29,11 +29,6 @@ class Browser:
             dataroot (str, Path): Path to the directory containing the Chess
                                   Dataset.
         """
-
-        self.picam2 = Picamera2()
-        self.picam2.configure(self.picam2.create_preview_configuration(main={"size": (640, 480)}))
-        self.picam2.start()
-
         self.dataroot = dataroot
 
         # Load annotations
@@ -60,6 +55,11 @@ class Browser:
             annotations, categories, how="left", left_on="category_id",
             right_on="id")
 
+        # Initialize Picamera2
+        self.picam2 = Picamera2()
+        self.picam2.configure(self.picam2.create_preview_configuration(main={"size": (640, 480)}))
+        self.picam2.start()
+
         # Initialize app window
         self.window = ThemedTk(theme="yaru")
         self.window.title('Chess Recognition Dataset (ChessReD) Browser')
@@ -70,17 +70,30 @@ class Browser:
         # Starting image
         self.current_image_id = 0
 
-        # Helper lambda functions
-        self.find_image_path = lambda x: Path(self.images[self.images['id']
-                                                          == x].path.values[0])
-        self.load_image = lambda x: ImageTk.PhotoImage(Image.open(x).resize(
-            (self.window_width // 2, self.window_width // 2)))
-
         # Build UI
         self.build_ui(self.current_image_id)
 
+        # Handle window closing
+        self.window.protocol("WM_DELETE_WINDOW", self.stop_camera)
+
         # Open window
         self.window.mainloop()
+
+    def capture_frame(self) -> Image.Image:
+        """Capture a frame from the PiCamera and convert it to a PIL image."""
+        # Capture the frame
+        frame = self.picam2.capture_array()
+
+        # Convert the frame from numpy array to PIL Image
+        pil_image = Image.fromarray(frame)
+        pil_image = pil_image.resize((self.window_width // 2, self.window_width // 2))
+
+        return pil_image
+
+    def stop_camera(self):
+        """Stop the Picamera2 feed when the window closes."""
+        self.picam2.stop()
+        self.window.destroy()
 
     def build_ui(self, image_number: Union[int, str]) -> None:
         """Build the UI of the Browser app.
@@ -104,10 +117,8 @@ class Browser:
                 f"Image with id:{image_number} not found.")
             image_number = self.current_image_id
 
-        # Load chessred image
-        self.current_image_path = self.find_image_path(image_number)
-        self.current_image = self.load_image(
-            self.dataroot / self.current_image_path)
+        # Load live feed instead of chessred image
+        self.current_image = ImageTk.PhotoImage(self.capture_frame())
 
         # Create an image of a 2D chess set from the annotations
         self.current_2Dimage = ImageTk.PhotoImage(
@@ -210,26 +221,13 @@ class Browser:
 
     def insert_images(self) -> None:
         """Add dataset and annotation images to window."""
-        # Add chessred image to window
+        # Add chessred image to window (replaced with live feed)
         self.my_label = ttk.Label(image=self.current_image)
         self.my_label.grid(row=0, column=0, columnspan=5)
 
         # Add annotations image to window
         self.my_label2D = ttk.Label(image=self.current_2Dimage)
         self.my_label2D.grid(row=0, column=5, columnspan=5)
-
-
-    def capture_frame(self) -> Image.Image:
-        """Capture a frame from the PiCamera and convert it to a PIL image."""
-        # Capture the frame
-        frame = self.picam2.capture_array()
-    
-        # Convert the frame from numpy array to PIL Image
-        pil_image = Image.fromarray(frame)
-        pil_image = pil_image.resize((self.window_width // 2, self.window_width // 2))
-        
-        return pil_image
-
 
     def create2D(self, image_number) -> 'Image.Image':
         """Create a PIL Image of a 2D chess set.
