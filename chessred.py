@@ -43,7 +43,7 @@ class Browser:
 
         # Convert the frame from numpy array to PIL Image
         pil_image = Image.fromarray(frame)
-        pil_image = pil_image.resize((self.window_width // 2, self.window_width // 2))
+        pil_image = pil_image.resize((WINDOW_WIDTH // 2, WINDOW_WIDTH // 2))
 
         return pil_image
 
@@ -98,23 +98,23 @@ class Browser:
 
         # Open default chessboard background image
         board = Image.open("./resources/board.png").resize(
-            (self.window_width//2, self.window_width//2))
-        piece_size = self.window_width // 16
+            (WINDOW_WIDTH//2, WINDOW_WIDTH//2))
+        piece_size = WINDOW_WIDTH// 16
 
         # Load chess piece images (placeholders)
         pieces = {
-            'R': Image.open("./resources/pieces/rook.png").resize((piece_size, piece_size)),
-            'N': Image.open("./resources/pieces/knight.png").resize((piece_size, piece_size)),
-            'B': Image.open("./resources/pieces/bishop.png").resize((piece_size, piece_size)),
-            'Q': Image.open("./resources/pieces/queen.png").resize((piece_size, piece_size)),
-            'K': Image.open("./resources/pieces/king.png").resize((piece_size, piece_size)),
-            'P': Image.open("./resources/pieces/pawn.png").resize((piece_size, piece_size)),
-            'r': Image.open("./resources/pieces/black_rook.png").resize((piece_size, piece_size)),
-            'n': Image.open("./resources/pieces/black_knight.png").resize((piece_size, piece_size)),
-            'b': Image.open("./resources/pieces/black_bishop.png").resize((piece_size, piece_size)),
-            'q': Image.open("./resources/pieces/black_queen.png").resize((piece_size, piece_size)),
-            'k': Image.open("./resources/pieces/black_king.png").resize((piece_size, piece_size)),
-            'p': Image.open("./resources/pieces/black_pawn.png").resize((piece_size, piece_size))
+            'R': Image.open("./resources/pieces/white-rook.png").resize((piece_size, piece_size)),
+            'N': Image.open("./resources/pieces/white-knight.png").resize((piece_size, piece_size)),
+            'B': Image.open("./resources/pieces/white-bishop.png").resize((piece_size, piece_size)),
+            'Q': Image.open("./resources/pieces/white-queen.png").resize((piece_size, piece_size)),
+            'K': Image.open("./resources/pieces/white-king.png").resize((piece_size, piece_size)),
+            'P': Image.open("./resources/pieces/white-pawn.png").resize((piece_size, piece_size)),
+            'r': Image.open("./resources/pieces/black-rook.png").resize((piece_size, piece_size)),
+            'n': Image.open("./resources/pieces/black-knight.png").resize((piece_size, piece_size)),
+            'b': Image.open("./resources/pieces/black-bishop.png").resize((piece_size, piece_size)),
+            'q': Image.open("./resources/pieces/black-queen.png").resize((piece_size, piece_size)),
+            'k': Image.open("./resources/pieces/black-king.png").resize((piece_size, piece_size)),
+            'p': Image.open("./resources/pieces/black-pawn.png").resize((piece_size, piece_size))
         }
 
         # Render the layout on the board
