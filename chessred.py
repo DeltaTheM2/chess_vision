@@ -2,7 +2,8 @@ import argparse
 from tkinter import ttk
 from PIL import Image, ImageTk
 from ttkthemes import ThemedTk
-from picamera2 import Picamera2  # Import Picamera2
+from picamera2 import Picamera2
+from pathlib import Path
 
 # Window width for the Browser App
 WINDOW_WIDTH = 1280
@@ -10,7 +11,8 @@ WINDOW_WIDTH = 1280
 class Browser:
     """Browser class.
 
-    The Browser class implements an app that shows a live feed from Picamera2.
+    The Browser class shows both a live feed from Picamera2 and a synthetic
+    2D chess set on the side.
     """
 
     def __init__(self) -> None:
@@ -23,7 +25,8 @@ class Browser:
 
         # Initialize app window
         self.window = ThemedTk(theme="yaru")
-        self.window.title('Live Camera Feed Browser')
+        self.window.title('Live Camera Feed and Chessboard')
+        self.window.iconbitmap("resources/pieces/icon.ico")
         self.window_width = WINDOW_WIDTH
         self.window.resizable(False, False)
 
@@ -57,16 +60,73 @@ class Browser:
         # Capture live feed
         self.current_image = ImageTk.PhotoImage(self.capture_frame())
 
-        # Insert image to window
+        # Render the 2D chessboard
+        self.current_2Dimage = ImageTk.PhotoImage(self.create2D())
+
+        # Insert images to window
         if not hasattr(self, "my_label"):
+            # Live feed on the left
             self.my_label = ttk.Label(image=self.current_image)
             self.my_label.grid(row=0, column=0, columnspan=5)
+
+            # 2D chessboard on the right
+            self.my_label2D = ttk.Label(image=self.current_2Dimage)
+            self.my_label2D.grid(row=0, column=5, columnspan=5)
         else:
             self.my_label.configure(image=self.current_image)
             self.my_label.image = self.current_image
+            self.my_label2D.configure(image=self.current_2Dimage)
+            self.my_label2D.image = self.current_2Dimage
 
-        # Schedule the next frame update
+        # Schedule the next frame update for the live feed
         self.window.after(50, self.build_ui)
+
+    def create2D(self) -> 'Image.Image':
+        """Create a PIL Image of a synthetic 2D chess set."""
+        # Dummy layout of chess pieces for the 2D chessboard
+        # (You can adjust this for different starting layouts)
+        layout = [
+            ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R'],
+            ['P', 'P', 'P', 'P', 'P', 'P', 'P', 'P'],
+            [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
+            [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
+            [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
+            [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
+            ['p', 'p', 'p', 'p', 'p', 'p', 'p', 'p'],
+            ['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r']
+        ]
+
+        cols = "abcdefgh"
+        rows = "87654321"
+
+        # Open default chessboard background image
+        board = Image.open("./resources/board.png").resize(
+            (self.window_width//2, self.window_width//2))
+        piece_size = self.window_width // 16
+
+        # Load chess piece images (placeholders)
+        pieces = {
+            'R': Image.open("./resources/pieces/rook.png").resize((piece_size, piece_size)),
+            'N': Image.open("./resources/pieces/knight.png").resize((piece_size, piece_size)),
+            'B': Image.open("./resources/pieces/bishop.png").resize((piece_size, piece_size)),
+            'Q': Image.open("./resources/pieces/queen.png").resize((piece_size, piece_size)),
+            'K': Image.open("./resources/pieces/king.png").resize((piece_size, piece_size)),
+            'P': Image.open("./resources/pieces/pawn.png").resize((piece_size, piece_size)),
+            'r': Image.open("./resources/pieces/black_rook.png").resize((piece_size, piece_size)),
+            'n': Image.open("./resources/pieces/black_knight.png").resize((piece_size, piece_size)),
+            'b': Image.open("./resources/pieces/black_bishop.png").resize((piece_size, piece_size)),
+            'q': Image.open("./resources/pieces/black_queen.png").resize((piece_size, piece_size)),
+            'k': Image.open("./resources/pieces/black_king.png").resize((piece_size, piece_size)),
+            'p': Image.open("./resources/pieces/black_pawn.png").resize((piece_size, piece_size))
+        }
+
+        # Render the layout on the board
+        for i, row in enumerate(layout):
+            for j, piece in enumerate(row):
+                if piece != ' ':
+                    board.paste(pieces[piece], (j * piece_size, i * piece_size), mask=pieces[piece])
+
+        return board
 
 
 if __name__ == "__main__":
@@ -74,9 +134,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--browser', action="store_true",
-                        help='Run live camera feed browser app.')
+                        help='Run live camera feed with 2D chessboard.')
 
-    args = parser.parse_args()
-
-    if args.browser:
-        Browser()
+    args = parser.
