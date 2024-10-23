@@ -8,7 +8,7 @@ from typing import Union
 import pandas as pd
 from PIL import Image, ImageTk
 from ttkthemes import ThemedTk
-
+from picamera2 import Picamera2
 from utils import download_chessred, extract_zipfile
 
 # Window width for the Browser App
@@ -29,6 +29,11 @@ class Browser:
             dataroot (str, Path): Path to the directory containing the Chess
                                   Dataset.
         """
+
+        self.picam2 = Picamera2()
+        self.picam2.configure(self.picam2.create_preview_configuration(main={"size": (640, 480)}))
+        self.picam2.start()
+
         self.dataroot = dataroot
 
         # Load annotations
@@ -212,6 +217,19 @@ class Browser:
         # Add annotations image to window
         self.my_label2D = ttk.Label(image=self.current_2Dimage)
         self.my_label2D.grid(row=0, column=5, columnspan=5)
+
+
+    def capture_frame(self) -> Image.Image:
+        """Capture a frame from the PiCamera and convert it to a PIL image."""
+        # Capture the frame
+        frame = self.picam2.capture_array()
+    
+        # Convert the frame from numpy array to PIL Image
+        pil_image = Image.fromarray(frame)
+        pil_image = pil_image.resize((self.window_width // 2, self.window_width // 2))
+        
+        return pil_image
+
 
     def create2D(self, image_number) -> 'Image.Image':
         """Create a PIL Image of a 2D chess set.
