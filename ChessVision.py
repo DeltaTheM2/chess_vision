@@ -1,195 +1,130 @@
-import torch
+import argparse
 from pathlib import Path
+from tkinter import ttk
+from typing import Union
 import cv2
-import numpy as np
-from torchvision import transforms
-from PIL import Image
-from train import ChessResNeXt
+from picamera2 import Picamera2
+from PIL import Image, ImageTk
+from ttkthemes import ThemedTk
 
-class ChessVision:
-    def __init__(self, model_path, board_image_path, piece_folder):
-        # Load the model
-        self.model = ChessResNeXt()
-        self.model.eval()  # Set model to evaluation mode
-        checkpoint = torch.load(model_path, map_location=torch.device('cpu'))  # Load checkpoint
-        self.model.load_state_dict(checkpoint['state_dict'], strict=False)  # Load model weights
+WINDOW_WIDTH = 1280
 
-        # Preprocessing transformation (depends on model input size)
-        self.preprocess = transforms.Compose([
-            transforms.Resize((1024, 1024)),  # Assuming the input size expected by the model is 1024x1024
-            transforms.ToTensor(),  # Convert frame to tensor
-            transforms.Normalize(mean=[0.47225544, 0.51124555, 0.55296206],
-                                 std=[0.27787283, 0.27054584, 0.27802786])
-        ])
+class Browser:
+    def __init__(self, dataroot: Union[str, Path]) -> None:
+        self.dataroot = dataroot
 
-        # Load the chessboard image (for overlaying detected pieces)
-        self.board_image = cv2.imread(board_image_path)
-        if self.board_image is None:
-            print(f"Error: Could not load board image from {board_image_path}")
-        self.piece_folder = piece_folder
+        # Initialize Picamera2
+        self.picam2 = Picamera2()
+        self.picam2.configure(self.picam2.create_still_configuration())
+        self.picam2.start()
 
-    def process_frame(self, frame):
-        # Convert the frame (OpenCV format) to a PIL image for processing
-        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        # Initialize app window
+        self.window = ThemedTk(theme="yaru")
+        self.window.title('Chess Game Visualizer')
+        self.window.iconbitmap("resources/pieces/icon.ico")
+        self.window_width = WINDOW_WIDTH
+        self.window.resizable(False, False)
 
-        # Preprocess the image
-        input_tensor = self.preprocess(image).unsqueeze(0)  # Add batch dimension
+        # Start capturing and processing images
+        self.update_board()
 
-        # Forward pass through the model to get predictions
-        with torch.no_grad():
-            logits = self.model(input_tensor)
+        # Bind the window close event
+        self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        # Reshape the logits to a 64x13 tensor (64 squares, 13 possible classes)
-        logits = logits.reshape((-1, 64, 13))
+        # Start the Tkinter main loop
+        self.window.mainloop()
 
-        # Post-process the logits to get the final prediction
-        predicted_classes = torch.argmax(logits, dim=2).squeeze()
+    def update_board(self):
+        # Capture an image from the camera
+        frame = self.picam2.capture_array()
 
-        # Convert predicted classes to human-readable form (e.g., map index to chess piece)
-        piece_positions, piece_categories = self.decode_predictions(predicted_classes)
+        # Process the captured image
+        self.process_image(frame)
 
-        # Overlay the 2D chessboard with detected pieces
-        return self.create2D(frame, piece_positions, piece_categories)
+        # Schedule the next update
+        self.window.after(1000, self.update_board)  # Update every second
 
-    def decode_predictions(self, predicted_classes):
-        """Map predicted classes to piece types and positions."""
-        positions = []
-        categories = []
+    def process_image(self, image):
+        self.current_frame = image.copy()
 
-        for i in range(64):
-            class_id = predicted_classes[i].item()
-            print(f"Square {i}: class_id = {class_id}")  # Debugging
+        # Convert the image to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-            if class_id == 0:  # 'empty'
-                continue
+        # Detect the chessboard corners
+        chessboard_size = (7, 7)  # Adjust to your actual chessboard size
+        ret, corners = cv2.findChessboardCorners(gray, chessboard_size, None)
 
-            if class_id >= 13 or class_id < 0:
-                print(f"Error: Invalid class_id {class_id} for square {i}, skipping.")
-                continue
+        if ret:
+            # Chessboard detected
+            # Implement piece detection logic here
+            positions, categories = self.detect_pieces(image, corners)
 
-            row, col = divmod(i, 8)
-            positions.append((col, row))
-            categories.append(self.map_class_to_piece(class_id))
+            # Update the UI with detected positions
+            self.update_ui(positions, categories)
+        else:
+            # Chessboard not detected
+            print("Chessboard not detected in the image.")
+
+    def detect_pieces(self, image, corners):
+        # Placeholder for actual piece detection logic
+        positions = []  # Detected positions in chess notation, e.g., ['e4', 'd5']
+        categories = []  # Detected piece categories, e.g., ['white_pawn', 'black_knight']
+        # TODO: Implement piece detection using image processing or machine learning
 
         return positions, categories
 
-    def map_class_to_piece(self, class_id):
-        """Map class ID to piece name (customize this based on your class definitions)."""
-        pieces = [
-            'empty',           # class_id = 0
-            'white-pawn',      # class_id = 1
-            'white-knight',    # class_id = 2
-            'white-bishop',    # class_id = 3
-            'white-rook',      # class_id = 4
-            'white-queen',     # class_id = 5
-            'white-king',      # class_id = 6
-            'black-pawn',      # class_id = 7
-            'black-knight',    # class_id = 8
-            'black-bishop',    # class_id = 9
-            'black-rook',      # class_id = 10
-            'black-queen',     # class_id = 11
-            'black-king'       # class_id = 12
-        ]
+    def update_ui(self, positions, categories):
+        # Create the 2D chessboard image from detected positions
+        self.current_2Dimage = ImageTk.PhotoImage(
+            self.create2D_from_positions(positions, categories))
 
-        if class_id >= len(pieces) or class_id < 0:
-            print(f"Error: Invalid class_id {class_id}, setting to 'empty'")
-            return 'empty'
+        # Convert the camera image to a format suitable for Tkinter
+        image_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(image_rgb)
+        self.current_image = ImageTk.PhotoImage(pil_image.resize(
+            (self.window_width // 2, self.window_width // 2)))
 
-        return pieces[class_id]
+        # Update the UI labels with new images
+        if hasattr(self, 'my_label'):
+            self.my_label.configure(image=self.current_image)
+            self.my_label.image = self.current_image
+            self.my_label2D.configure(image=self.current_2Dimage)
+            self.my_label2D.image = self.current_2Dimage
+        else:
+            # Initialize labels if they don't exist
+            self.my_label = ttk.Label(image=self.current_image)
+            self.my_label.grid(row=0, column=0, columnspan=5)
+            self.my_label2D = ttk.Label(image=self.current_2Dimage)
+            self.my_label2D.grid(row=0, column=5, columnspan=5)
 
-    def create2D(self, frame, positions, categories):
-        """Overlay detected pieces on a 2D chessboard image."""
-        piece_size = frame.shape[1] // 8  # Assuming the board is 8x8
+    def create2D_from_positions(self, positions, categories) -> 'Image.Image':
+        cols = "abcdefgh"
+        rows = "87654321"
+
+        # Open default chessboard background image
+        board = Image.open("./resources/board.png").resize(
+            (self.window_width // 2, self.window_width // 2))
+        piece_size = self.window_width // 16
 
         for piece, pos in zip(categories, positions):
-            piece_path = Path(self.piece_folder) / f"{piece}.png"
-            print(f"Loading piece image from: {piece_path}")
+            piece_png = Image.open(f"./resources/pieces/{piece}.png").resize(
+                (piece_size, piece_size))
 
-            # Check if the image file exists
-            if not piece_path.exists():
-                print(f"Error: Missing image for piece {piece}")
-                continue
+            j = cols.index(pos[0])
+            i = rows.index(pos[1])
+            board.paste(piece_png, (j * piece_size, i * piece_size), mask=piece_png)
 
-            piece_img = cv2.imread(str(piece_path), cv2.IMREAD_UNCHANGED)
-            print(f"Loaded piece_img shape for {piece}: {piece_img.shape if piece_img is not None else 'None'}")
+        return board
 
-            # Ensure that the image was successfully loaded and has valid dimensions
-            if piece_img is None or piece_img.size == 0:
-                print(f"Error: Invalid image for piece {piece_path}")
-                continue
-
-            # Resize the piece image
-            try:
-                piece_img = cv2.resize(piece_img, (piece_size, piece_size))
-                print(f"Resized piece_img shape for {piece}: {piece_img.shape}")
-            except Exception as e:
-                print(f"Error resizing image {piece_path}: {e}")
-                continue
-
-            # Check if the image has an alpha channel (for transparency)
-            if piece_img.shape[2] == 4:  # Image has an alpha channel
-                # Calculate position on the chessboard
-                j, i = pos
-                x, y = j * piece_size, i * piece_size
-
-                # Ensure the offsets are within frame boundaries
-                if y + piece_size > frame.shape[0] or x + piece_size > frame.shape[1]:
-                    print(f"Error: Piece {piece} at position {pos} exceeds frame boundaries.")
-                    continue
-
-                # Overlay the piece image onto the board
-                y_offset = y
-                x_offset = x
-                alpha = piece_img[:, :, 3] / 255.0
-
-                # Avoid zero-sized regions
-                if piece_img.shape[0] == 0 or piece_img.shape[1] == 0:
-                    print(f"Error: Piece image {piece_path} has zero size after resizing.")
-                    continue
-
-                for c in range(3):  # Only process RGB channels, skip the alpha channel
-                    try:
-                        frame[y_offset:y_offset+piece_size, x_offset:x_offset+piece_size, c] = \
-                            piece_img[:, :, c] * alpha + \
-                            frame[y_offset:y_offset+piece_size, x_offset:x_offset+piece_size, c] * (1.0 - alpha)
-                    except Exception as e:
-                        print(f"Error overlaying piece {piece}: {e}")
-            else:
-                print(f"Warning: Piece image {piece_path} has no alpha channel, skipping transparency.")
-
-        return frame
-
-    def run(self):
-        # Open webcam
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            print("Error: Could not open webcam.")
-            return
-
-        while True:
-            # Capture frame-by-frame
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            # Process frame for chess detection
-            detected_frame = self.process_frame(frame)
-
-            # Display the resulting frame
-            cv2.imshow('Chess Vision', detected_frame)
-
-            # Press 'q' to exit
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-
-        # Release the webcam and close windows
-        cap.release()
-        cv2.destroyAllWindows()
+    def on_closing(self):
+        self.picam2.stop()
+        self.window.destroy()
 
 if __name__ == "__main__":
-    model_path = "checkpoint.ckpt"
-    board_image_path = "/resources/board.png"
-    piece_folder = "/resources/pieces/"
-
-    chess_vision = ChessVision(model_path, board_image_path, piece_folder)
-    chess_vision.run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dataroot', required=True,
+                        help="Path to ChessReD data.")
+    args = parser.parse_args()
+    dataroot = Path(args.dataroot)
+    dataroot.mkdir(parents=True, exist_ok=True)
+    Browser(dataroot=args.dataroot)
