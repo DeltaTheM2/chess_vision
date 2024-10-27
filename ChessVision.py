@@ -187,9 +187,9 @@ class ChessVision:
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    model_path = "C:\\Users\\smirz\\OneDrive\\Documents\\Coding Minds\\Chess vision\\chess-vision\\checkpoint.ckpt"
-    board_image_path = "C:\\Users\\smirz\\OneDrive\\Documents\\Coding Minds\\Chess vision\\end-to-end-chess-recognition\\resources\\board.png"
-    piece_folder = "C:\\Users\\smirz\\OneDrive\\Documents\\Coding Minds\\Chess vision\\end-to-end-chess-recognition\\resources\\pieces\\"
+    model_path = "checkpoint.ckpt"
+    board_image_path = "/resources/board.png"
+    piece_folder = "/resources/pieces/"
 
     chess_vision = ChessVision(model_path, board_image_path, piece_folder)
     chess_vision.run()
