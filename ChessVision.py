@@ -9,6 +9,8 @@ from picamera2 import Picamera2
 from PIL import Image, ImageTk
 from ttkthemes import ThemedTk
 import time
+import threading
+import queue
 
 WINDOW_WIDTH = 1280
 
@@ -28,9 +30,10 @@ class Browser:
         """
         self.dataroot = Path(dataroot)
 
-        # Initialize Picamera2
+        # Initialize Picamera2 with reduced resolution
         self.picam2 = Picamera2()
-        self.picam2.configure(self.picam2.create_still_configuration())
+        camera_config = self.picam2.create_still_configuration(main={"size": (640, 480)})
+        self.picam2.configure(camera_config)
         self.picam2.start()
         time.sleep(2)  # Allow the camera to warm up
 
@@ -51,8 +54,19 @@ class Browser:
         self.window_width = WINDOW_WIDTH
         self.window.resizable(False, False)
 
-        # Start capturing and processing images
-        self.update_board()
+        # Initialize queues and threading events
+        self.frame_queue = queue.Queue(maxsize=1)
+        self.result_queue = queue.Queue(maxsize=1)
+        self.stop_event = threading.Event()
+
+        # Start the capture and processing threads
+        self.capture_thread = threading.Thread(target=self.capture_frames)
+        self.processing_thread = threading.Thread(target=self.process_frames)
+        self.capture_thread.start()
+        self.processing_thread.start()
+
+        # Start the UI update loop
+        self.update_ui_loop()
 
         # Bind the window close event
         self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -60,48 +74,72 @@ class Browser:
         # Start the Tkinter main loop
         self.window.mainloop()
 
-    def update_board(self):
-        """Capture image from the camera and update the GUI."""
-        # Capture an image from the camera
-        frame = self.picam2.capture_array()
+    def capture_frames(self):
+        """Capture frames from the camera and put them in the frame queue."""
+        while not self.stop_event.is_set():
+            frame = self.picam2.capture_array()
+            # Reduce image resolution for faster processing
+            frame = cv2.resize(frame, (320, 240))
+            try:
+                self.frame_queue.put(frame, timeout=1)
+            except queue.Full:
+                pass  # Skip frame if the queue is full
 
-        # Process the captured image
-        self.process_image(frame)
+    def process_frames(self):
+        """Process frames from the frame queue and put the results in the result queue."""
+        while not self.stop_event.is_set():
+            try:
+                frame = self.frame_queue.get(timeout=1)
+                positions, categories = self.process_image(frame)
+                self.result_queue.put((frame, positions, categories), timeout=1)
+            except queue.Empty:
+                continue
+            except queue.Full:
+                pass  # Skip result if the queue is full
 
-        # Schedule the next update
-        self.window.after(1000, self.update_board)  # Update every second
+    def update_ui_loop(self):
+        """Update the UI with the latest processed frame."""
+        try:
+            frame, positions, categories = self.result_queue.get_nowait()
+            self.update_ui(frame, positions, categories)
+        except queue.Empty:
+            pass
+        # Schedule the next UI update
+        self.window.after(100, self.update_ui_loop)  # Update every 100 ms
 
     def process_image(self, image):
         """Process the captured image to detect the chessboard and pieces.
 
         Args:
             image (numpy.ndarray): Captured image from the camera.
+
+        Returns:
+            positions (list): List of positions in chess notation (e.g., ['e4', 'd2']).
+            categories (list): List of piece categories (e.g., ['white_pawn', 'black_knight']).
         """
-        self.current_frame = image.copy()
+        positions = []
+        categories = []
 
         # Convert the image to grayscale
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Detect the chessboard corners
+        # Efficient chessboard detection
         chessboard_size = (7, 7)  # Adjust to your actual chessboard size
-        ret, corners = cv2.findChessboardCorners(gray, chessboard_size, None)
+        ret, corners = cv2.findChessboardCornersSB(gray, chessboard_size, None)
 
         if ret:
             # Chessboard detected
             # Refine corner locations
-            criteria = (cv2.TermCriteria_EPS + cv2.TermCriteria_MAX_ITER, 30, 0.001)
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
             corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
 
             # Implement piece detection logic here
             positions, categories = self.detect_pieces(image, corners, chessboard_size)
-
-            # Update the UI with detected positions
-            self.update_ui(positions, categories)
         else:
             # Chessboard not detected
             print("Chessboard not detected in the image.")
-            # Optionally, clear the board visualization
-            self.update_ui([], [])
+
+        return positions, categories
 
     def detect_pieces(self, image, corners, chessboard_size):
         """Detect chess pieces on the board from the captured image.
@@ -127,19 +165,18 @@ class Browser:
         objp[:,:2] = np.mgrid[0:chessboard_size[0], 0:chessboard_size[1]].T.reshape(-1,2)
 
         # Get the perspective transform
-        board_size = chessboard_size[0] - 1, chessboard_size[1] - 1
-        pts_src = np.array([corners[0], corners[chessboard_size[0]-1],
-                            corners[-1], corners[-chessboard_size[0]]], dtype='float32')
-        pts_dst = np.array([[0, 0], [board_size[0], 0],
-                            [board_size[0], board_size[1]], [0, board_size[1]]], dtype='float32')
+        board_w = chessboard_size[0]
+        board_h = chessboard_size[1]
+        pts_src = np.array([corners[0][0], corners[board_w-1][0],
+                            corners[-1][0], corners[-board_w][0]], dtype='float32')
+        pts_dst = np.array([[0, 0], [board_w - 1, 0],
+                            [board_w - 1, board_h - 1], [0, board_h - 1]], dtype='float32')
         M = cv2.getPerspectiveTransform(pts_src, pts_dst)
 
         # Warp the image to get a top-down view
-        warped = cv2.warpPerspective(image, M, (board_size[0], board_size[1]))
-
-        # Resize the warped image for easier processing
         square_size = 50  # Pixels per square
-        warped = cv2.resize(warped, (square_size * 8, square_size * 8))
+        warped_size = (square_size * 8, square_size * 8)
+        warped = cv2.warpPerspective(image, M, warped_size)
 
         # Loop over each square on the board
         for y in range(8):
@@ -203,10 +240,11 @@ class Browser:
             # No piece detected
             return None
 
-    def update_ui(self, positions, categories):
+    def update_ui(self, frame, positions, categories):
         """Update the GUI with the latest camera image and board visualization.
 
         Args:
+            frame (numpy.ndarray): Latest captured frame.
             positions (list): Detected positions of pieces in chess notation.
             categories (list): Detected categories of pieces.
         """
@@ -215,7 +253,7 @@ class Browser:
             self.create2D_from_positions(positions, categories))
 
         # Convert the camera image to a format suitable for Tkinter
-        image_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
+        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(image_rgb)
         self.current_image = ImageTk.PhotoImage(pil_image.resize(
             (self.window_width // 2, self.window_width // 2)))
@@ -267,6 +305,9 @@ class Browser:
 
     def on_closing(self):
         """Handle the window closing event."""
+        self.stop_event.set()
+        self.capture_thread.join()
+        self.processing_thread.join()
         self.picam2.stop()
         self.window.destroy()
 
