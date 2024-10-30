@@ -1,29 +1,141 @@
+"""This module implements the Browser class with real-time camera integration."""
+
 import argparse
 from pathlib import Path
 from tkinter import ttk
-from typing import Union
-import cv2
-import numpy as np
-from picamera2 import Picamera2
-from PIL import Image, ImageTk
-from ttkthemes import ThemedTk
 import threading
 import time
+
+import cv2
+import numpy as np
+from PIL import Image, ImageTk
+from ttkthemes import ThemedTk
+
+from picamera2 import Picamera2
+
+# Import PyTorch and your model architecture
+import torch
+from torchvision import transforms
+from torch import nn
+from torchvision import models
 
 # Window width for the Browser App
 WINDOW_WIDTH = 1280
 
 
+class ChessResNeXt(nn.Module):
+    """Modified ResNeXt network for chess recognition on ChessReD."""
+
+    def __init__(self):
+        super().__init__()
+
+        backbone = models.resnext101_32x8d(weights=None)
+        num_filters = backbone.fc.in_features
+        layers = list(backbone.children())[:-1]
+
+        self.feature_extractor = nn.Sequential(*layers)
+
+        num_target_classes = 64 * 13
+
+        self.classifier = nn.Linear(num_filters, num_target_classes)
+
+    def forward(self, x):
+        x = self.feature_extractor(x).flatten(1)
+        x = self.classifier(x)
+        return x
+
+
+class ChessPieceDetector:
+    """Class to handle loading the model and making predictions."""
+
+    def __init__(self, model_path):
+        """Load the pre-trained model."""
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Initialize the model architecture
+        self.model = ChessResNeXt()
+        self.model.to(self.device)
+
+        # Load the pre-trained weights
+        checkpoint = torch.load(model_path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['state_dict'])
+        self.model.eval()
+
+        # Define the image transformations
+        self.transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize(1024),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.47225544, 0.51124555, 0.55296206],
+                std=[0.27787283, 0.27054584, 0.27802786]),
+        ])
+
+    def predict(self, image):
+        """Make predictions on the input image."""
+        input_tensor = self.transform(image).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            logits = self.model(input_tensor)
+
+        # Process outputs to get predictions
+        positions, categories = self.process_outputs(logits)
+        return positions, categories
+
+    def process_outputs(self, logits):
+        """Process model outputs to extract positions and categories."""
+        # The logits are of shape (1, 64 * 13)
+        # Reshape to (1, 64, 13)
+        logits = logits.view(-1, 64, 13)
+        # Apply softmax to get probabilities
+        probs = torch.softmax(logits, dim=2)
+        # Get predicted classes for each square
+        preds = torch.argmax(probs, dim=2).squeeze(0).cpu().numpy()
+
+        # Map class indices to piece names
+        class_map = [
+            'empty',
+            'white_pawn', 'white_knight', 'white_bishop', 'white_rook', 'white_queen', 'white_king',
+            'black_pawn', 'black_knight', 'black_bishop', 'black_rook', 'black_queen', 'black_king'
+        ]
+
+        positions = []
+        categories = []
+
+        cols = 'abcdefgh'
+        rows = '87654321'  # Since the first row corresponds to row 8 in chess notation
+
+        for idx, class_idx in enumerate(preds):
+            if class_idx == 0:
+                continue  # Skip empty squares
+            piece = class_map[class_idx]
+            col = cols[idx % 8]
+            row = rows[idx // 8]
+            position = f"{col}{row}"
+            positions.append(position)
+            categories.append(piece)
+
+        return positions, categories
+
+
 class Browser:
     """Browser class.
 
-    The Browser class captures live images from the camera,
-    processes them to detect chessboard and chess pieces, and displays
-    the results in a Tkinter GUI.
+    The Browser class captures images from the Raspberry Pi camera,
+    processes them using a pre-trained model to detect chess pieces,
+    and visualizes the game in a Tkinter GUI.
     """
 
-    def __init__(self) -> None:
-        """Initialize Browser."""
+    def __init__(self, model_path: Path) -> None:
+        """Initialize Browser.
+
+        Args:
+            model_path (Path): Path to the pre-trained model checkpoint.
+        """
+        self.model_path = model_path
+
+        # Initialize the chess piece detector
+        self.detector = ChessPieceDetector(self.model_path)
+
         # Initialize app window
         self.window = ThemedTk(theme="yaru")
         self.window.title('Chess Game Visualizer')
@@ -32,14 +144,19 @@ class Browser:
 
         # Initialize Picamera2
         self.picam2 = Picamera2()
-        camera_config = self.picam2.create_preview_configuration(main={"size": (640, 480)})
+        camera_config = self.picam2.create_preview_configuration(
+            main={"size": (1024, 1024), "format": "RGB888"}
+        )
         self.picam2.configure(camera_config)
         self.picam2.start()
-        time.sleep(2)  # Allow camera to warm up
+        time.sleep(2)  # Allow the camera to warm up
+
+        # Build UI
+        self.build_ui()
 
         # Start the image capture and processing thread
         self.stop_event = threading.Event()
-        self.processing_thread = threading.Thread(target=self.capture_and_process)
+        self.processing_thread = threading.Thread(target=self.capture_frames)
         self.processing_thread.start()
 
         # Bind the window close event
@@ -48,165 +165,73 @@ class Browser:
         # Open window
         self.window.mainloop()
 
-    def capture_and_process(self):
+    def build_ui(self) -> None:
+        """Build the UI of the Browser app."""
+        # Initialize labels for images
+        self.my_label = ttk.Label(self.window)
+        self.my_label.grid(row=0, column=0, columnspan=5)
+
+        self.my_label2D = ttk.Label(self.window)
+        self.my_label2D.grid(row=0, column=5, columnspan=5)
+
+    def capture_frames(self):
+        """Capture frames from the camera and process them."""
         while not self.stop_event.is_set():
             # Capture an image from the camera
             frame = self.picam2.capture_array()
+            # Convert from RGB to BGR for OpenCV
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
             # Process the captured image
-            self.process_image(frame)
+            positions, categories = self.process_image(frame)
+
+            # Update the UI with the new image and annotations
+            self.rebuild_widgets(frame, positions, categories)
 
             # Limit the frame rate
             time.sleep(0.1)
 
     def process_image(self, image):
-        # Convert the image to grayscale
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        # Detect the chessboard corners
-        chessboard_size = (7, 7)  # Adjust based on your calibration pattern
-        ret, corners = cv2.findChessboardCorners(gray, chessboard_size, None)
-
-        if ret:
-            print("Chessboard detected.")
-            # Refine corner locations
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-            corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-
-            # Detect pieces
-            positions, categories = self.detect_pieces(image, corners, chessboard_size)
-        else:
-            print("Chessboard not detected.")
-            positions, categories = [], []
-
-        # Update the UI with the new image and annotations
-        self.update_ui(image, positions, categories)
-
-    def detect_pieces(self, image, corners, chessboard_size):
-        """Detect chess pieces on the board from the captured image.
+        """Process the captured image using the pre-trained model.
 
         Args:
             image (numpy.ndarray): Captured image from the camera.
-            corners (numpy.ndarray): Detected corners of the chessboard.
-            chessboard_size (tuple): Size of the chessboard pattern used.
 
         Returns:
-            positions (list): List of positions in chess notation.
-            categories (list): List of piece categories.
+            positions (list): Detected positions of pieces in chess notation.
+            categories (list): Detected categories of pieces.
         """
-        positions = []
-        categories = []
-
-        # Map chessboard corners to board squares
-        cols = "abcdefgh"
-        rows = "87654321"
-
-        # Compute the perspective transform matrix
-        board_w = chessboard_size[0]
-        board_h = chessboard_size[1]
-        pts_src = np.array([corners[0][0], corners[board_w - 1][0],
-                            corners[-1][0], corners[-board_w][0]], dtype='float32')
-        pts_dst = np.array([[0, 0], [board_w - 1, 0],
-                            [board_w - 1, board_h - 1], [0, board_h - 1]], dtype='float32')
-        M = cv2.getPerspectiveTransform(pts_src, pts_dst)
-
-        # Warp the image to get a top-down view
-        square_size = 50  # Pixels per square
-        warped_size = (square_size * 8, square_size * 8)
-        warped = cv2.warpPerspective(image, M, warped_size)
-
-        # Loop over each square on the board
-        for y in range(8):
-            for x in range(8):
-                # Get the region of interest (ROI) for the current square
-                x_start = x * square_size
-                y_start = y * square_size
-                roi = warped[y_start:y_start + square_size, x_start:x_start + square_size]
-
-                # Analyze the ROI to detect a piece
-                piece_category = self.analyze_square(roi)
-
-                if piece_category:
-                    # Map the square position to chess notation
-                    position = cols[x] + rows[y]
-                    positions.append(position)
-                    categories.append(piece_category)
-
+        # Use the model to detect chess pieces
+        positions, categories = self.detector.predict(image)
         return positions, categories
 
-    def analyze_square(self, roi):
-        """Analyze a square region to detect if a piece is present and its category.
-
-        Args:
-            roi (numpy.ndarray): Region of interest corresponding to a board square.
-
-        Returns:
-            category (str or None): Detected piece category or None if no piece detected.
-        """
-        # Convert the ROI to HSV color space
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-
-        # Define color ranges for white and black pieces
-        # Adjust these ranges based on your pieces' colors
-        lower_white = np.array([0, 0, 200])
-        upper_white = np.array([180, 25, 255])
-
-        lower_black = np.array([0, 0, 0])
-        upper_black = np.array([180, 255, 50])
-
-        # Create masks for white and black pieces
-        mask_white = cv2.inRange(hsv, lower_white, upper_white)
-        mask_black = cv2.inRange(hsv, lower_black, upper_black)
-
-        # Count the number of white and black pixels
-        white_pixels = cv2.countNonZero(mask_white)
-        black_pixels = cv2.countNonZero(mask_black)
-
-        # Determine if a piece is present based on pixel counts
-        threshold = (roi.shape[0] * roi.shape[1]) * 0.1  # Adjust the threshold as needed
-
-        if white_pixels > threshold:
-            # White piece detected
-            # For simplicity, we assume it's a pawn
-            return 'white_pawn'
-        elif black_pixels > threshold:
-            # Black piece detected
-            # For simplicity, we assume it's a pawn
-            return 'black_pawn'
-        else:
-            # No piece detected
-            return None
-
-    def update_ui(self, frame, positions, categories):
-        """Update the GUI with the latest camera image and board visualization.
+    def rebuild_widgets(self, frame, positions, categories) -> None:
+        """Rebuild window widgets with new content.
 
         Args:
             frame (numpy.ndarray): Latest captured frame.
             positions (list): Detected positions of pieces in chess notation.
             categories (list): Detected categories of pieces.
+
+        Returns:
+            None
         """
-        # Resize the frame for display
+        # Convert the frame to PIL image
         display_frame = cv2.resize(frame, (self.window_width // 2, self.window_width // 2))
         image_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(image_rgb)
-        self.current_image = ImageTk.PhotoImage(pil_image)
+        current_image = ImageTk.PhotoImage(pil_image)
 
         # Create the 2D chessboard image from detected positions
-        self.current_2Dimage = ImageTk.PhotoImage(
+        current_2Dimage = ImageTk.PhotoImage(
             self.create2D_from_positions(positions, categories))
 
-        # Update the UI labels with new images
-        if hasattr(self, 'my_label'):
-            self.my_label.configure(image=self.current_image)
-            self.my_label.image = self.current_image
-            self.my_label2D.configure(image=self.current_2Dimage)
-            self.my_label2D.image = self.current_2Dimage
-        else:
-            # Initialize labels if they don't exist
-            self.my_label = ttk.Label(image=self.current_image)
-            self.my_label.grid(row=0, column=0, columnspan=5)
-            self.my_label2D = ttk.Label(image=self.current_2Dimage)
-            self.my_label2D.grid(row=0, column=5, columnspan=5)
+        # Update images in the labels
+        self.my_label.configure(image=current_image)
+        self.my_label.image = current_image
+
+        self.my_label2D.configure(image=current_2Dimage)
+        self.my_label2D.image = current_2Dimage
 
     def create2D_from_positions(self, positions, categories) -> 'Image.Image':
         """Create a PIL Image of a 2D chess set from detected positions and categories.
@@ -249,4 +274,15 @@ class Browser:
 
 
 if __name__ == "__main__":
-    Browser()
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--model_path', required=True,
+                        help="Path to the pre-trained model checkpoint.")
+
+    args = parser.parse_args()
+
+    model_path = Path(args.model_path)
+    if not model_path.is_file():
+        raise FileNotFoundError(f"Model file '{model_path}' does not exist.")
+
+    Browser(model_path=model_path)
