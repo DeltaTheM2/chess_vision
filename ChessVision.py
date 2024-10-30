@@ -132,7 +132,7 @@ class Browser:
             # Refine corner locations
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
             corners = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
-
+            cv2.drawChessboardCorners(image, chessboard_size, corners, ret)
             # Implement piece detection logic here
             positions, categories = self.detect_pieces(image, corners, chessboard_size)
         else:
