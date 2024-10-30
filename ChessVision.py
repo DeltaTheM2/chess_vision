@@ -1,16 +1,14 @@
 import argparse
-import json
 from pathlib import Path
-from tkinter import END, messagebox, ttk
+from tkinter import ttk
 from typing import Union
-
 import cv2
 import numpy as np
+from picamera2 import Picamera2
 from PIL import Image, ImageTk
 from ttkthemes import ThemedTk
 import threading
 import time
-from picamera2 import Picamera2
 
 # Window width for the Browser App
 WINDOW_WIDTH = 1280
@@ -20,55 +18,24 @@ class Browser:
     """Browser class.
 
     The Browser class captures live images from the camera,
-    processes them to detect chess pieces, and displays
+    processes them to detect chessboard and chess pieces, and displays
     the results in a Tkinter GUI.
     """
 
-    def __init__(self, dataroot: Union[str, Path]) -> None:
-        """Initialize Browser.
-
-        Args:
-            dataroot (str, Path): Path to the directory containing resources.
-        """
-        self.dataroot = Path(dataroot)
-
-        # Load annotations
-        data_path = Path(dataroot, "annotations.json")
-        if not data_path.is_file():
-            raise FileNotFoundError(f"File '{data_path}' doesn't exist.")
-
-        with open(data_path, "r") as f:
-            annotations_file = json.load(f)
-
-        # Load tables
-        annotations = pd.DataFrame(
-            annotations_file["annotations"]['pieces'],
-            index=None)
-        categories = pd.DataFrame(
-            annotations_file["categories"],
-            index=None)
-        self.images = pd.DataFrame(
-            annotations_file["images"],
-            index=None)
-
-        # Add category names to annotations
-        self.annotations = pd.merge(
-            annotations, categories, how="left", left_on="category_id",
-            right_on="id")
-
+    def __init__(self) -> None:
+        """Initialize Browser."""
         # Initialize app window
         self.window = ThemedTk(theme="yaru")
         self.window.title('Chess Game Visualizer')
-
-        # Set window size and properties
         self.window_width = WINDOW_WIDTH
         self.window.resizable(False, False)
 
         # Initialize Picamera2
         self.picam2 = Picamera2()
-        camera_config = self.picam2.create_preview_configuration()
+        camera_config = self.picam2.create_preview_configuration(main={"size": (640, 480)})
         self.picam2.configure(camera_config)
         self.picam2.start()
+        time.sleep(2)  # Allow camera to warm up
 
         # Start the image capture and processing thread
         self.stop_event = threading.Event()
@@ -101,6 +68,7 @@ class Browser:
         ret, corners = cv2.findChessboardCorners(gray, chessboard_size, None)
 
         if ret:
+            print("Chessboard detected.")
             # Refine corner locations
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
             corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
@@ -108,6 +76,7 @@ class Browser:
             # Detect pieces
             positions, categories = self.detect_pieces(image, corners, chessboard_size)
         else:
+            print("Chessboard not detected.")
             positions, categories = [], []
 
         # Update the UI with the new image and annotations
@@ -128,11 +97,85 @@ class Browser:
         positions = []
         categories = []
 
-        # Implement your piece detection logic here
-        # This might include perspective transformation, color segmentation, etc.
+        # Map chessboard corners to board squares
+        cols = "abcdefgh"
+        rows = "87654321"
 
-        # For now, we'll return empty lists
+        # Compute the perspective transform matrix
+        board_w = chessboard_size[0]
+        board_h = chessboard_size[1]
+        pts_src = np.array([corners[0][0], corners[board_w - 1][0],
+                            corners[-1][0], corners[-board_w][0]], dtype='float32')
+        pts_dst = np.array([[0, 0], [board_w - 1, 0],
+                            [board_w - 1, board_h - 1], [0, board_h - 1]], dtype='float32')
+        M = cv2.getPerspectiveTransform(pts_src, pts_dst)
+
+        # Warp the image to get a top-down view
+        square_size = 50  # Pixels per square
+        warped_size = (square_size * 8, square_size * 8)
+        warped = cv2.warpPerspective(image, M, warped_size)
+
+        # Loop over each square on the board
+        for y in range(8):
+            for x in range(8):
+                # Get the region of interest (ROI) for the current square
+                x_start = x * square_size
+                y_start = y * square_size
+                roi = warped[y_start:y_start + square_size, x_start:x_start + square_size]
+
+                # Analyze the ROI to detect a piece
+                piece_category = self.analyze_square(roi)
+
+                if piece_category:
+                    # Map the square position to chess notation
+                    position = cols[x] + rows[y]
+                    positions.append(position)
+                    categories.append(piece_category)
+
         return positions, categories
+
+    def analyze_square(self, roi):
+        """Analyze a square region to detect if a piece is present and its category.
+
+        Args:
+            roi (numpy.ndarray): Region of interest corresponding to a board square.
+
+        Returns:
+            category (str or None): Detected piece category or None if no piece detected.
+        """
+        # Convert the ROI to HSV color space
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+        # Define color ranges for white and black pieces
+        # Adjust these ranges based on your pieces' colors
+        lower_white = np.array([0, 0, 200])
+        upper_white = np.array([180, 25, 255])
+
+        lower_black = np.array([0, 0, 0])
+        upper_black = np.array([180, 255, 50])
+
+        # Create masks for white and black pieces
+        mask_white = cv2.inRange(hsv, lower_white, upper_white)
+        mask_black = cv2.inRange(hsv, lower_black, upper_black)
+
+        # Count the number of white and black pixels
+        white_pixels = cv2.countNonZero(mask_white)
+        black_pixels = cv2.countNonZero(mask_black)
+
+        # Determine if a piece is present based on pixel counts
+        threshold = (roi.shape[0] * roi.shape[1]) * 0.1  # Adjust the threshold as needed
+
+        if white_pixels > threshold:
+            # White piece detected
+            # For simplicity, we assume it's a pawn
+            return 'white_pawn'
+        elif black_pixels > threshold:
+            # Black piece detected
+            # For simplicity, we assume it's a pawn
+            return 'black_pawn'
+        else:
+            # No piece detected
+            return None
 
     def update_ui(self, frame, positions, categories):
         """Update the GUI with the latest camera image and board visualization.
@@ -179,13 +222,13 @@ class Browser:
         rows = "87654321"
 
         # Open default chessboard background image
-        board_image_path = self.dataroot / "resources/board.png"
+        board_image_path = Path("resources/board.png")
         board = Image.open(board_image_path).resize(
             (self.window_width // 2, self.window_width // 2))
         piece_size = self.window_width // 16
 
         for piece, pos in zip(categories, positions):
-            piece_image_path = self.dataroot / f"resources/pieces/{piece}.png"
+            piece_image_path = Path(f"resources/pieces/{piece}.png")
             if not piece_image_path.is_file():
                 continue  # Skip if the piece image does not exist
             piece_png = Image.open(piece_image_path).resize(
@@ -206,15 +249,4 @@ class Browser:
 
 
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument('--dataroot', required=True,
-                        help="Path to the directory containing resources.")
-
-    args = parser.parse_args()
-
-    dataroot = Path(args.dataroot)
-    dataroot.mkdir(parents=True, exist_ok=True)
-
-    Browser(dataroot=args.dataroot)
+    Browser()
