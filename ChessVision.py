@@ -64,7 +64,7 @@ class ChessPieceDetector:
         # Define the image transformations
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize(1024),
+            transforms.Resize(512),  # Reduced from 1024
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.47225544, 0.51124555, 0.55296206],
@@ -144,12 +144,17 @@ class Browser:
 
         # Initialize Picamera2
         self.picam2 = Picamera2()
+        # Reduce resolution in camera config
         camera_config = self.picam2.create_preview_configuration(
-            main={"size": (1024, 1024), "format": "RGB888"}
+            main={"size": (640, 640), "format": "RGB888"}
         )
         self.picam2.configure(camera_config)
-        self.picam2.start()
-        time.sleep(2)  # Allow the camera to warm up
+        # Add error handling for camera
+        try:
+            self.picam2.start()
+            time.sleep(2)
+        except Exception as e:
+            print(f"Camera error: {e}")
 
         # Build UI
         self.build_ui()
