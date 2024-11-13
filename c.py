@@ -3,8 +3,8 @@ import cv2
 import numpy as np
 from picamera2 import Picamera2
 import tensorflow as tf
+from tensorflow.keras import layers, models
 import chess
-import chess.engine
 
 # Initialize the camera
 picam2 = Picamera2()
@@ -16,8 +16,25 @@ time.sleep(1)  # Allow the camera to warm up
 # Initialize chess board
 board = chess.Board()
 
-# Load the piece recognition model
-model = tf.keras.models.load_model('models/chess_piece_classifier.h5')
+# Define the model architecture
+def create_model():
+    model = models.Sequential([
+        layers.Conv2D(32, (3, 3), activation='relu', input_shape=(64, 64, 3)),
+        layers.MaxPooling2D(2, 2),
+        layers.Conv2D(64, (3, 3), activation='relu'),
+        layers.MaxPooling2D(2, 2),
+        layers.Conv2D(128, (3, 3), activation='relu'),
+        layers.MaxPooling2D(2, 2),
+        layers.Flatten(),
+        layers.Dense(512, activation='relu'),
+        layers.Dense(13, activation='softmax')  # Adjust the number of classes if needed
+    ])
+    return model
+
+# Load the piece recognition model from checkpoint
+checkpoint_path = 'checkpoint.ckpt'  # Update with your actual checkpoint path
+model = create_model()
+model.load_weights(checkpoint_path)
 
 # Labels for piece classification
 labels = [
@@ -33,11 +50,10 @@ def capture_image():
 
 def preprocess_image(image):
     """Preprocess the captured image for analysis."""
-    # Convert to grayscale
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    # Apply Gaussian blur
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    return blurred
+    # Convert to RGB if needed
+    if image.shape[2] == 1:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+    return image
 
 def get_chessboard_grid(image):
     """Detect the chessboard grid and extract individual squares."""
@@ -116,6 +132,7 @@ def update_board(board, move):
 def main():
     # Capture the initial board state
     previous_image = capture_image()
+    previous_image = preprocess_image(previous_image)
     previous_squares = get_chessboard_grid(previous_image)
     previous_positions = classify_pieces(previous_squares)
 
@@ -123,6 +140,7 @@ def main():
         while True:
             # Capture the current board state
             current_image = capture_image()
+            current_image = preprocess_image(current_image)
             current_squares = get_chessboard_grid(current_image)
             current_positions = classify_pieces(current_squares)
 
