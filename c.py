@@ -2,13 +2,14 @@ import time
 import cv2
 import numpy as np
 from picamera2 import Picamera2
-import tensorflow as tf
-from tensorflow.keras import layers, models
+import torch
+import torch.nn as nn
+import torchvision.transforms as transforms
 import chess
 
 # Initialize the camera
 picam2 = Picamera2()
-camera_config = picam2.create_still_configuration(main={"size": (1280, 720)})
+camera_config = picam2.create_still_configuration(main={"size": (1024, 1024)})
 picam2.configure(camera_config)
 picam2.start()
 time.sleep(1)  # Allow the camera to warm up
@@ -16,25 +17,37 @@ time.sleep(1)  # Allow the camera to warm up
 # Initialize chess board
 board = chess.Board()
 
-# Define the model architecture
-def create_model():
-    model = models.Sequential([
-        layers.Conv2D(32, (3, 3), activation='relu', input_shape=(64, 64, 3)),
-        layers.MaxPooling2D(2, 2),
-        layers.Conv2D(64, (3, 3), activation='relu'),
-        layers.MaxPooling2D(2, 2),
-        layers.Conv2D(128, (3, 3), activation='relu'),
-        layers.MaxPooling2D(2, 2),
-        layers.Flatten(),
-        layers.Dense(512, activation='relu'),
-        layers.Dense(13, activation='softmax')  # Adjust the number of classes if needed
-    ])
-    return model
+# Define the device (CPU or GPU)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load the piece recognition model from checkpoint
-checkpoint_path = 'checkpoint.ckpt'  # Update with your actual checkpoint path
-model = create_model()
-model.load_weights(checkpoint_path)
+# Define the model architecture
+class ChessResNeXt(nn.Module):
+    """Modified ResNeXt network for chess recognition."""
+
+    def __init__(self):
+        super(ChessResNeXt, self).__init__()
+
+        backbone = torch.hub.load('pytorch/vision:v0.10.0', 'resnext101_32x8d', pretrained=True)
+        num_filters = backbone.fc.in_features
+        layers = list(backbone.children())[:-1]
+
+        self.feature_extractor = nn.Sequential(*layers)
+
+        num_target_classes = 64 * 13  # 64 squares * 13 classes
+
+        self.classifier = nn.Linear(num_filters, num_target_classes)
+
+    def forward(self, x):
+        x = self.feature_extractor(x).flatten(1)
+        x = self.classifier(x)
+        return x
+
+# Instantiate the model and load the checkpoint
+model = ChessResNeXt().to(device)
+checkpoint_path = 'path_to_your_checkpoint.ckpt'  # Update with your checkpoint path
+checkpoint = torch.load(checkpoint_path, map_location=device)
+model.load_state_dict(checkpoint['state_dict'])
+model.eval()  # Set model to evaluation mode
 
 # Labels for piece classification
 labels = [
@@ -43,16 +56,19 @@ labels = [
     'white_bishop', 'white_king', 'white_knight', 'white_pawn', 'white_queen', 'white_rook'
 ]
 
+# Define the image transformations
+transform = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Resize(1024),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.47225544, 0.51124555, 0.55296206],
+        std=[0.27787283, 0.27054584, 0.27802786]),
+])
+
 def capture_image():
     """Capture an image from the camera."""
     image = picam2.capture_array()
-    return image
-
-def preprocess_image(image):
-    """Preprocess the captured image for analysis."""
-    # Convert to RGB if needed
-    if image.shape[2] == 1:
-        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
     return image
 
 def get_chessboard_grid(image):
@@ -74,20 +90,19 @@ def get_chessboard_grid(image):
             squares.append(square)
     return squares
 
-def classify_pieces(squares):
-    """Classify the piece on each square."""
-    piece_positions = []
-    for square in squares:
-        # Preprocess the square image
-        img = cv2.resize(square, (64, 64))
-        img = img.astype('float32') / 255.0
-        img = np.expand_dims(img, axis=0)
+def classify_pieces(image):
+    """Classify the pieces on the board."""
+    # Apply the transformations
+    input_tensor = transform(image).unsqueeze(0).to(device)
 
-        # Predict the piece
-        prediction = model.predict(img)
-        label_idx = np.argmax(prediction, axis=1)[0]
-        label = labels[label_idx]
-        piece_positions.append(label)
+    # Make prediction
+    with torch.no_grad():
+        output = model(input_tensor)
+        output = output.view(-1, 64, 13)  # Batch size x 64 squares x 13 classes
+        predictions = torch.argmax(output, dim=2).cpu().numpy()[0]
+
+    # Map predictions to labels
+    piece_positions = [labels[pred] for pred in predictions]
     return piece_positions
 
 def detect_move(previous_positions, current_positions):
@@ -132,17 +147,13 @@ def update_board(board, move):
 def main():
     # Capture the initial board state
     previous_image = capture_image()
-    previous_image = preprocess_image(previous_image)
-    previous_squares = get_chessboard_grid(previous_image)
-    previous_positions = classify_pieces(previous_squares)
+    previous_positions = classify_pieces(previous_image)
 
     try:
         while True:
             # Capture the current board state
             current_image = capture_image()
-            current_image = preprocess_image(current_image)
-            current_squares = get_chessboard_grid(current_image)
-            current_positions = classify_pieces(current_squares)
+            current_positions = classify_pieces(current_image)
 
             # Detect move
             move = detect_move(previous_positions, current_positions)
