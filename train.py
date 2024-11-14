@@ -1,7 +1,7 @@
-"""This module implements a modified ResNeXt network for chess recognition."""
+# train.py
+
 import argparse
 from pathlib import Path
-from typing import Tuple
 
 import pytorch_lightning as pl
 import torch
@@ -19,211 +19,158 @@ pl.seed_everything(42, workers=True)
 
 
 class ChessDataModule(pl.LightningDataModule):
-    """PyTorch Lightning data module for ChessReD.
-
-    Args:
-        dataroot (str): Path to ChessReD directory.
-        batch_size (int): Number of samples per batch.
-    """
+    """PyTorch Lightning data module for the chess recognition dataset."""
 
     def __init__(self, dataroot: str, batch_size: int, workers: int) -> None:
-        """
-        Args:
-            dataroot (str): Path to ChessReD directory.
-            batch_size (int): Number of samples per batch.
-            workers (int): Number of workers for dataloading.
-        """
         super().__init__()
         self.dataroot = dataroot
-        self.transform = transforms.Compose([
-            transforms.Resize(1024, antialias=None),
-            transforms.ToPILImage(),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.47225544, 0.51124555, 0.55296206],
-                std=[0.27787283, 0.27054584, 0.27802786]),
-        ])
-
         self.batch_size = batch_size
         self.workers = workers
 
-    def setup(self, stage: str) -> None:
-        """PyTorch Lightning required method to setup the dataset at `stage`.
+        # Data transformations
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),  # Resize images to 224x224
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],  # ImageNet mean
+                std=[0.229, 0.224, 0.225]    # ImageNet std
+            ),
+        ])
 
-        Args:
-            stage (str): Stage at which the data module is loaded.
-        """
-        if stage == "fit":
+    def setup(self, stage: str = None) -> None:
+        """Set up datasets for different stages."""
+        if stage == 'fit' or stage is None:
             self.chess_train = ChessRecognitionDataset(
                 dataroot=self.dataroot,
-                split="train", transform=self.transform)
-
+                split='train',
+                transform=self.transform
+            )
             self.chess_val = ChessRecognitionDataset(
                 dataroot=self.dataroot,
-                split="val", transform=self.transform)
+                split='val',
+                transform=self.transform
+            )
 
-        if stage == "test":
+        if stage == 'test' or stage == 'predict':
             self.chess_test = ChessRecognitionDataset(
                 dataroot=self.dataroot,
-                split="test", transform=self.transform)
-
-        if stage == "predict":
-            self.chess_predict = ChessRecognitionDataset(
-                dataroot=self.dataroot,
-                split="test", transform=self.transform)
+                split='test',
+                transform=self.transform
+            )
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.chess_train, batch_size=self.batch_size,
-            num_workers=self.workers, shuffle=True)
+            self.chess_train,
+            batch_size=self.batch_size,
+            num_workers=self.workers,
+            shuffle=True
+        )
 
     def val_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.chess_val, batch_size=self.batch_size,
-            num_workers=self.workers, shuffle=True)
+            self.chess_val,
+            batch_size=self.batch_size,
+            num_workers=self.workers
+        )
 
     def test_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.chess_test, batch_size=self.batch_size,
-            num_workers=self.workers)
-
-    def predict_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.chess_predict, batch_size=self.batch_size,
-            num_workers=self.workers)
+            self.chess_test,
+            batch_size=self.batch_size,
+            num_workers=self.workers
+        )
 
 
-class ChessResNeXt(pl.LightningModule):
-    """Modified ResNeXt network for chess recognition on ChessReD.
+class ChessMobileNet(pl.LightningModule):
+    """MobileNetV2 model for chess recognition."""
 
-    This class implements a modified ResNeXt network for chess recognition.
-    The top-level classifier of ResNeXt101 is replaced with a linear layer
-    of 64x13 outputs, where 64 are the squares of the chessboard and 13 the
-    number of possible classes to classify each square (6 piece types per
-    color and empty square).
-
-    Args:
-        lr (float): Initial learning rate for training. (Default: 0.001)
-        decay (int): Period (epochs) of learning rate decay by a
-                     factor of 10. (Default: 100)
-    """
-
-    def __init__(self, lr: float = 1e-3, decay: int = 100) -> None:
-        """Initializes ChessResNeXt.
-
-        Args:
-            lr (float): Initial learning rate for training. (Default: 0.001)
-            decay (int): Period (epochs) of learning rate decay by a
-                         factor of 10. (Default: 100)       
-        """
+    def __init__(self, lr: float = 1e-3, decay: int = 20) -> None:
         super().__init__()
 
         self.lr = lr
         self.decay = decay
 
-        backbone = models.resnext101_32x8d(weights="DEFAULT")
-        num_filters = backbone.fc.in_features
-        layers = list(backbone.children())[:-1]
+        # Load MobileNetV2 backbone
+        backbone = models.mobilenet_v2(weights="DEFAULT")
+        num_filters = backbone.last_channel  # Usually 1280
 
-        self.feature_extractor = nn.Sequential(*layers)
+        # Remove the classifier layer
+        backbone.classifier = nn.Identity()
 
-        num_target_classes = 64 * 13
+        self.feature_extractor = backbone
 
+        num_target_classes = 64 * 13  # 64 squares * 13 classes
+
+        # New classifier layer
         self.classifier = nn.Linear(num_filters, num_target_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.feature_extractor(x).flatten(1)
+        x = self.feature_extractor(x)
+        x = x.flatten(1)
         x = self.classifier(x)
-
         return x
 
-    def cross_entropy_loss(
-            self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    def cross_entropy_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        # Reshape logits and labels for multi-label classification
+        logits = logits.view(-1, 13)  # Each square has 13 classes
+        labels = labels.view(-1, 13)
+
         return F.binary_cross_entropy_with_logits(logits, labels)
 
-    def common_step(
-            self,
-            batch: Tuple[torch.Tensor, torch.Tensor],
-            batch_idx: int,
-            return_accuracy: bool = False) -> torch.Tensor:
-
+    def common_step(self, batch, batch_idx, stage: str):
         x, y = batch
         logits = self.forward(x)
 
-        if return_accuracy:
-            y_cat = torch.argmax(y.reshape((-1, 64, 13)), dim=2)
-            preds_cat = torch.argmax(logits.reshape((-1, 64, 13)), dim=2)
+        loss = self.cross_entropy_loss(logits, y)
 
-            return (self.cross_entropy_loss(logits, y),
-                    recognition_accuracy(y_cat, preds_cat))
+        y_cat = torch.argmax(y.view(-1, 64, 13), dim=2)
+        preds_cat = torch.argmax(logits.view(-1, 64, 13), dim=2)
+        accuracy = recognition_accuracy(y_cat, preds_cat)
 
-        return self.cross_entropy_loss(logits, y)
-
-    def training_step(self,
-                      train_batch: Tuple[torch.Tensor, torch.Tensor],
-                      batch_idx: int) -> torch.Tensor:
-
-        loss = self.common_step(train_batch, batch_idx)
-        self.log('train_loss', loss)
+        self.log(f'{stage}_loss', loss, prog_bar=True)
+        self.log(f'{stage}_acc', accuracy, prog_bar=True)
 
         return loss
 
-    def validation_step(self,
-                        val_batch: Tuple[torch.Tensor, torch.Tensor],
-                        batch_idx: int) -> None:
+    def training_step(self, batch, batch_idx):
+        return self.common_step(batch, batch_idx, 'train')
 
-        x, y = val_batch
-        logits = self.forward(x)
-        loss = self.cross_entropy_loss(logits, y)
+    def validation_step(self, batch, batch_idx):
+        self.common_step(batch, batch_idx, 'val')
 
-        loss, accuracy = self.common_step(
-            val_batch, batch_idx, return_accuracy=True)
+    def test_step(self, batch, batch_idx):
+        self.common_step(batch, batch_idx, 'test')
 
-        self.log('val_loss', loss)
-        self.log('val_acc', accuracy)
-
-    def test_step(self,
-                  test_batch: Tuple[torch.Tensor, torch.Tensor],
-                  batch_idx: int) -> None:
-
-        loss = self.common_step(test_batch, batch_idx)
-        self.log('test_loss', loss)
-
-    def predict_step(
-            self,
-            predict_batch: Tuple[torch.Tensor, torch.Tensor],
-            batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-
-        x, y = predict_batch
-        logits = self.forward(x)
-
-        return (logits, y)
-
-    def configure_optimizers(self) -> torch.optim.Adam:
+    def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, self.decay)
-
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.decay, gamma=0.1)
         return [optimizer], [scheduler]
 
 
 def main(args):
     data_module = ChessDataModule(
-        args.dataroot, args.nsamples, args.workers)
+        dataroot=args.dataroot,
+        batch_size=args.batch_size,
+        workers=args.workers
+    )
 
-    model = ChessResNeXt(lr=args.lr, decay=args.decay)
+    model = ChessMobileNet(lr=args.lr, decay=args.decay)
     checkpoint_callback = ModelCheckpoint(
         monitor="val_loss",
         save_last=True,
         mode="min",
         save_top_k=args.topk,
-        filename="model_{epoch:02d}-{val_loss:.4f}",
+        filename="mobilenet_{epoch:02d}-{val_loss:.4f}",
         save_weights_only=False
     )
 
-    trainer = pl.Trainer(accelerator=args.device, devices=args.ndevices,
-                         deterministic=True, max_epochs=args.epochs,
-                         callbacks=[checkpoint_callback])
+    trainer = pl.Trainer(
+        accelerator=args.device,
+        devices=args.ndevices,
+        max_epochs=args.epochs,
+        deterministic=True,
+        callbacks=[checkpoint_callback]
+    )
     trainer.fit(model, data_module)
 
 
@@ -232,42 +179,34 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--dataroot', required=True,
-                        help="Path to ChessReD data.")
+                        help="Path to the dataset.")
 
-    parser.add_argument('--epochs',
-                        help="Number of epochs to train the model",
-                        required=True)
+    parser.add_argument('--epochs', type=int, required=True,
+                        help="Number of epochs to train the model.")
 
-    parser.add_argument('--nsamples',
-                        help="Number of samples per batch.",
-                        default=8)
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help="Number of samples per batch.")
 
-    parser.add_argument('--lr', help="Initial learning rate.", default=1e-3)
+    parser.add_argument('--lr', type=float, default=1e-3,
+                        help="Initial learning rate.")
 
-    parser.add_argument('--decay',
-                        help=("Period (epochs) of learning rate decay " +
-                              "by a factor of 10."),
-                        default=100)
+    parser.add_argument('--decay', type=int, default=20,
+                        help="Period (epochs) of learning rate decay by a factor of 10.")
 
-    parser.add_argument('--topk',
-                        help=("Number k of top performing" +
-                              " model checkpoints to save"),
-                        default=3)
+    parser.add_argument('--topk', type=int, default=3,
+                        help="Number k of top-performing model checkpoints to save.")
 
-    parser.add_argument('--device',
-                        choices=["cpu", "gpu"],
-                        default="gpu")
+    parser.add_argument('--device', choices=["cpu", "gpu"], default="cpu",
+                        help="Device to use for training ('cpu' or 'gpu').")
 
-    parser.add_argument('--ndevices',
-                        help="Number of devices to use for training",
-                        default=1)
+    parser.add_argument('--ndevices', type=int, default=1,
+                        help="Number of devices to use for training.")
 
-    parser.add_argument('--workers',
-                        help="Number of workers to use for data loading",
-                        default=4)
+    parser.add_argument('--workers', type=int, default=4,
+                        help="Number of workers to use for data loading.")
 
     parser.add_argument('--download', action="store_true",
-                        help='Download the Chess Recognition Dataset.')
+                        help='Download the chess recognition dataset.')
 
     args = parser.parse_args()
 
@@ -277,7 +216,7 @@ if __name__ == "__main__":
     if args.download:
         download_chessred(dataroot)
 
-        zip_path = dataroot/"images.zip"
+        zip_path = dataroot / "images.zip"
         print()
 
         extract_zipfile(zip_file=zip_path, output_directory=dataroot)
