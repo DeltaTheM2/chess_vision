@@ -67,38 +67,44 @@ try:
                 old_centers = new_centers
 
             new_pos = [center for center in new_centers if center not in old_centers]
+            old_pos = [center for center in old_centers if center not in new_centers]
             move = ''
-            if len(new_pos) > 0:
-                old_pos = [center for center in old_centers if center not in new_centers]
-                if len(old_pos) != len(new_pos):
-                    continue
 
-                for i in range(len(new_pos)):
-                    move += x_chess_board[int(old_pos[i][0]) - 1] + str(int(old_pos[i][1]))
-                    move += x_chess_board[int(new_pos[i][0]) - 1] + str(int(new_pos[i][1]))
+            if len(new_pos) == 1 and len(old_pos) == 1:  # Ensure exactly one piece moved
+                move = (
+                    x_chess_board[int(old_pos[0][0]) - 1] + str(int(old_pos[0][1]))
+                    + x_chess_board[int(new_pos[0][0]) - 1] + str(int(new_pos[0][1]))
+                )
 
-                if "e1" in move and "g1" in move:
-                    move = "e1g1"
-                if "e1" in move and "c1" in move:
-                    move = "e1c1"
-                if "e8" in move and "g8" in move:
+                # Handle castling cases
+                if move == "e1g1":
+                    move = "e1g1"  # King-side castling
+                elif move == "e1c1":
+                    move = "e1c1"  # Queen-side castling
+                elif move == "e8g8":
                     move = "e8g8"
-                if "e8" in move and "c8" in move:
+                elif move == "e8c8":
                     move = "e8c8"
 
+                # Push move to the board if valid
                 if chess.Move.from_uci(move) in board.legal_moves:
                     board.push_uci(move)
                 else:
-                    print(move)
+                    print(f"Invalid move detected: {move}")
+            else:
+                print("Invalid move detected: multiple pieces moved simultaneously.")
+            
+            old_centers = new_centers
 
-                old_centers = new_centers
-
-            lastmove = chess.Move.from_uci(move) if move else move
-            chessboard_image = Image.open(io.BytesIO(cairosvg.svg2png(chess.svg.board(board, lastmove=lastmove, size=480))))
+            # Update the chessboard image
+            chessboard_image = Image.open(io.BytesIO(cairosvg.svg2png(chess.svg.board(board, lastmove=move, size=480))))
             chessboard_image = np.array(chessboard_image)
+
+            # Ensure chessboard_image is RGB (remove alpha channel if present)
             if chessboard_image.shape[2] == 4:  # Handle alpha channel
                 chessboard_image = chessboard_image[:, :, :3]
 
+            # Draw predictions
             for bbox in predictions_bboxes:
                 color = (255, 0, 0) if bbox[4] == 0 else (0, 255, 0)
                 output_image = cv2.rectangle(output_image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
@@ -116,6 +122,10 @@ try:
 
         # Combine images
         combined_image = np.hstack([output_image, chessboard_image])
+
+        # Debugging: Check image shapes
+        print("Output Image Shape:", output_image.shape)
+        print("Chessboard Image Shape:", chessboard_image.shape)
 
         # Update Matplotlib plot
         img_display.set_data(combined_image)
