@@ -5,18 +5,24 @@ import torch
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
-
 import chess
 import chess.svg
+import chess.pgn  # <-- Import PGN support
 import cairosvg
 
 from picamera2 import Picamera2
-
 from myutils import get_reference_corners, calibrate_image, predict_yolo
 
 # Initialize the chessboard and other constants
 board = chess.Board()
 x_chess_board = 'abcdefgh'
+
+# Initialize PGN game record
+pgn_game = chess.pgn.Game()
+pgn_game.headers["Event"] = "Live game"
+pgn_game.headers["Site"] = "Local"
+pgn_game.headers["Date"] = time.strftime("%Y.%m.%d")
+current_node = pgn_game  # This will keep track of our move sequence
 
 # Generate an initial chessboard image
 chessboard_image = Image.open(io.BytesIO(cairosvg.svg2png(chess.svg.board(board, lastmove='', size=480)))).convert("RGB")
@@ -58,7 +64,7 @@ try:
 
         # Detect chessboard corners
         ret_test, corners_test = cv2.findChessboardCornersSB(image_test_gray, (7, 7), cv2.CALIB_CB_EXHAUSTIVE)
-        ret, output_image = calibrate_image(image_test_rgb, corners_ref, shape_ref, height, width)
+        ret, output_image = calibrate_image(image_test_gray, corners_ref, shape_ref, height, width)
 
         if ret:
             predictions_bboxes, new_centers = predict_yolo(output_image, model, shape_ref)
@@ -77,6 +83,7 @@ try:
                     move += x_chess_board[int(old_pos[i][0]) - 1] + str(int(old_pos[i][1]))
                     move += x_chess_board[int(new_pos[i][0]) - 1] + str(int(new_pos[i][1]))
 
+                # Fix for castling moves
                 if "e1" in move and "g1" in move:
                     move = "e1g1"
                 if "e1" in move and "c1" in move:
@@ -86,15 +93,19 @@ try:
                 if "e8" in move and "c8" in move:
                     move = "e8c8"
 
-                if chess.Move.from_uci(move) in board.legal_moves:
-                    board.push_uci(move)
+                move_obj = chess.Move.from_uci(move)
+                if move_obj in board.legal_moves:
+                    board.push(move_obj)
+                    # Record move in PGN:
+                    current_node = current_node.add_variation(move_obj)
                 else:
-                    print(move)
+                    print("Illegal move detected:", move)
 
                 old_centers = new_centers
 
             lastmove = chess.Move.from_uci(move) if move else move
-            chessboard_image = Image.open(io.BytesIO(cairosvg.svg2png(chess.svg.board(board, lastmove=lastmove, size=480))))
+            chessboard_svg = chess.svg.board(board, lastmove=lastmove, size=480)
+            chessboard_image = Image.open(io.BytesIO(cairosvg.svg2png(chessboard_svg)))
             chessboard_image = np.array(chessboard_image)
             if chessboard_image.shape[2] == 4:  # Handle alpha channel
                 chessboard_image = chessboard_image[:, :, :3]
@@ -124,6 +135,24 @@ try:
 
         # Save to video
         out.write(combined_image)
+
+        # Check if the board has been reset (i.e. all pieces are in their original positions)
+        # We check that the board is in the starting position AND that at least one move has been made.
+        if board.move_stack and board.fen() == chess.Board().fen():
+            # Export the game record in PGN format
+            with open("games.pgn", "a") as f:
+                exporter = chess.pgn.StringExporter(headers=True, variations=False, comments=False)
+                pgn_string = pgn_game.accept(exporter)
+                f.write(pgn_string + "\n\n")
+            print("Game reset detected. PGN record saved to games.pgn.")
+
+            # Reset the game: reinitialize board and PGN game record
+            board = chess.Board()
+            pgn_game = chess.pgn.Game()
+            pgn_game.headers["Event"] = "Live game"
+            pgn_game.headers["Site"] = "Local"
+            pgn_game.headers["Date"] = time.strftime("%Y.%m.%d")
+            current_node = pgn_game
 
 except KeyboardInterrupt:
     print("Exiting gracefully...")
