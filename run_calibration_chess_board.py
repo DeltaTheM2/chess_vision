@@ -35,7 +35,6 @@ while True:
     
     if ret_test:
         homography, mask = cv2.findHomography(corners_test, corners_ref, cv2.RANSAC)
-        # homography, mask = cv2.findHomography(corners_ref, corners_test, cv2.RANSAC)
 
         height, width = image_test.shape[:2]
   
